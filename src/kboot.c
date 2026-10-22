@@ -716,6 +716,40 @@ static int dt_set_cpus(void)
     if (cpus < 0)
         bail("FDT: /cpus node not found in devtree\n");
 
+
+    /* SMP start masks + each CPU's RVBAR as read by m1n1 (index = cpu-id). */
+    {
+        extern u64 smp_started_mask, smp_start_fail_mask;
+        u64 alive = 0;
+        u64 rvbar[12] = {0};
+        for (int i = 0; i < MAX_CPUS; i++)
+            if (smp_is_alive(i))
+                alive |= BIT(i);
+        int an = adt_path_offset(adt, "/cpus");
+        if (an >= 0 && chip_id == T8152) {
+            int cn = an;
+            ADT_FOREACH_CHILD(adt, cn) {
+                u32 id;
+                u64 impl[2];
+                if (ADT_GETPROP(adt, cn, "cpu-id", &id) == sizeof(id) && id < 12 &&
+                    ADT_GETPROP_ARRAY(adt, cn, "cpu-impl-reg", impl) == sizeof(impl) && impl[1] >= 8)
+                    rvbar[id] = read64(impl[0]);
+            }
+        }
+        int chosen = fdt_path_offset(dt, "/chosen");
+        if (chosen >= 0) {
+            fdt_setprop_u64(dt, chosen, "m1n1,smp-started", smp_started_mask);
+            fdt_setprop_u64(dt, chosen, "m1n1,smp-failed", smp_start_fail_mask);
+            fdt_setprop_u64(dt, chosen, "m1n1,smp-alive", alive);
+            fdt_setprop(dt, chosen, "m1n1,smp-rvbar", rvbar, sizeof(rvbar));
+            {
+                extern u32 smp_relay_why, smp_relay_oldvec[4];
+                fdt_setprop_u32(dt, chosen, "m1n1,smp-relay-why", smp_relay_why);
+                fdt_setprop(dt, chosen, "m1n1,smp-relay-oldvec", smp_relay_oldvec,
+                            sizeof(smp_relay_oldvec));
+            }
+        }
+    }
     uint32_t *pruned_phandles = calloc(MAX_CPUS, sizeof(uint32_t));
     size_t pruned = 0;
     if (!pruned_phandles)
@@ -5317,6 +5351,47 @@ int kboot_prepare_dt(void *fdt)
      */
     if (dt_set_memory())
         return -1;
+
+    /*
+     * T8152 final CPU pass. Linux saw cpu-release-addr = 0 on every started CPU, so make
+     * the spin-table hand-off independent of dt_set_cpus(): for the Nth cpu@ node (DT order =
+     * firmware cpu-id order = m1n1 index), if m1n1 has that CPU alive, store its real MPIDR as reg
+     * and its spin-table release address. Records what was in the DT before and after.
+     */
+    if (chip_id == T8152) {
+        u64 before[12] = {0}, after[12] = {0}, mp[12] = {0};
+        u32 changed = 0, nodes = 0;
+        int cpus_n = fdt_path_offset(dt, "/cpus");
+        int cn = cpus_n >= 0 ? fdt_first_subnode(dt, cpus_n) : -1;
+        for (; cn >= 0; cn = fdt_next_subnode(dt, cn)) {
+            const char *nm = fdt_get_name(dt, cn, NULL);
+            if (strncmp(nm, "cpu@", 4))
+                continue;
+            int idx = nodes++;
+            if (idx >= 12)
+                continue;
+            const fdt64_t *rel = fdt_getprop(dt, cn, "cpu-release-addr", NULL);
+            before[idx] = rel ? fdt64_ld(rel) : ~0ULL;
+            if (idx == boot_cpu_idx || !smp_is_alive(idx))
+                continue;
+            mp[idx] = smp_get_mpidr(idx);
+            after[idx] = smp_get_release_addr(idx);
+            if (fdt_setprop_inplace_u64(dt, cn, "reg", mp[idx]) ||
+                fdt_setprop_inplace_u64(dt, cn, "cpu-release-addr", after[idx])) {
+                after[idx] = ~0ULL;
+                continue;
+            }
+            changed++;
+        }
+        int chosen2 = fdt_path_offset(dt, "/chosen");
+        if (chosen2 >= 0) {
+            fdt_setprop(dt, chosen2, "m1n1,smp-dt-before", before, sizeof(before));
+            fdt_setprop(dt, chosen2, "m1n1,smp-dt-mpidr", mp, sizeof(mp));
+            fdt_setprop(dt, chosen2, "m1n1,smp-dt-rel", after, sizeof(after));
+            fdt_setprop_u32(dt, chosen2, "m1n1,smp-dt-changed", changed);
+            fdt_setprop_u32(dt, chosen2, "m1n1,smp-dt-nodes", nodes);
+        }
+    }
 
     /* T8140 PCIe status is known only after pcie_init() in kboot_boot(). */
     if (chip_id != T8140 && fdt_pack(dt))
