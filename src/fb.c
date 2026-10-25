@@ -331,6 +331,16 @@ static inline rgb_t font_get_pixel(u8 c, u32 x, u32 y)
     return col;
 }
 
+u32 fb_font_width(void)
+{
+    return console.font.width;
+}
+
+u32 fb_font_height(void)
+{
+    return console.font.height;
+}
+
 /* Draw a string with each console-font glyph scaled up by an integer
  * factor; the glyph intensity modulates the requested color. Used by the
  * on-screen probe so a phone photo of the firmware framebuffer is legible. */

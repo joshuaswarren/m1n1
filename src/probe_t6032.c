@@ -131,7 +131,16 @@ static void probe_hexbuf(char *dst, const u8 *b, u32 n)
 
 static u32 probe_font_h(void)
 {
-    return 16; /* console font height; fb_init always picks an 8x16 metric font on this path */
+    u32 h = fb_font_height(); /* 16 normally, 32 when iBoot flags the display retina */
+
+    return h ? h : 16; /* 0 = console not initialised */
+}
+
+static u32 probe_font_w(void)
+{
+    u32 w = fb_font_width();
+
+    return w ? w : 8;
 }
 
 /* The whole shareable screen: big facts on top, small backup block below. */
@@ -146,7 +155,7 @@ static void probe_render(const probe_t6032_data *d, const char *title, const cha
 
     /* Fit big and small rows together: the base32 wrap depends on the small
      * scale, and the line count feeds the height. */
-    s = fb.width / 640;
+    s = fb.width / (80 * probe_font_w());
     if (s < 2)
         s = 2;
     if (s > 8)
@@ -155,7 +164,7 @@ static void probe_render(const probe_t6032_data *d, const char *title, const cha
         small = s / 2;
         if (small < 1)
             small = 1;
-        per_line = (fb.width - 48) / (8 * small);
+        per_line = (fb.width - 48) / (probe_font_w() * small);
         if (per_line > sizeof(line) - 1)
             per_line = sizeof(line) - 1;
         if (!per_line)
@@ -446,6 +455,7 @@ void probe_t6032_run(void)
 
     probe_render(&d, PROBE_TITLE, b32);
     printf("probe: done\n");
+    fb_set_active(false); /* later console lines would tear the screen */
 }
 
 void probe_fb_demo_run(void)
@@ -483,4 +493,5 @@ void probe_fb_demo_run(void)
         return;
     printf("probe: DEMO screen (no hardware touched)\n");
     probe_render(&d, "T6032 PROBE DEMO", b32);
+    fb_set_active(false);
 }

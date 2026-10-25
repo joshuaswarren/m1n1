@@ -431,6 +431,39 @@ int main(int argc, char **argv) {
         write_ppm(argv[4]);
         return 0;
     }
+    if (!strcmp(argv[1], "retina")) {
+        /* 16x32 console font: iBoot flagged the display retina. */
+        chip_id = T6032;
+        memset(&cur_boot_args, 0, sizeof(cur_boot_args));
+        uint32_t w = strtoul(argv[2], NULL, 0), h = strtoul(argv[3], NULL, 0);
+        cur_boot_args.video.width = w;
+        cur_boot_args.video.height = h;
+        cur_boot_args.video.stride = w * 4;
+        cur_boot_args.video.depth = 32 | 0x10000;
+        cur_boot_args.video.base = (uint64_t)(uintptr_t)calloc(h, w * 4);
+        fb_init(false);
+        probe_fb_demo_run();
+        write_ppm(argv[4]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "console")) {
+        /* boot-log lines, the demo render, then trailing console lines:
+         * with fb_set_active(false) after the render the tail must not tear
+         * the probe block, so the band is identical for any line count. */
+        fb_setup(strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0));
+        fb_set_active(true);
+        char l[128];
+        int n = atoi(argv[5]);
+        for (int i = 0; i < n; i++) {
+            int k = snprintf(l, sizeof l, "boot log line %d\n", i);
+            fb_console_write(l, k);
+        }
+        probe_fb_demo_run();
+        const char *t = "probe: done\nRunning proxy...\nline3\n";
+        fb_console_write(t, strlen(t));
+        write_ppm(argv[4]);
+        return 0;
+    }
     return 2;
 }
 """
@@ -446,6 +479,9 @@ def build_harness(work: pathlib.Path) -> pathlib.Path:
     shim.mkdir(exist_ok=True)
     for name, body in SHIMS.items():
         (shim / name).write_text(body)
+    # fb.c is compiled from work/src-h and includes ../build/build_cfg.h
+    (work / "build").mkdir(exist_ok=True)
+    (work / "build" / "build_cfg.h").write_text(SHIMS["build_cfg.h"])
 
     # font + retina font + gz logo blobs, exactly the device symbols
     gen = work / "font_bytes.c"
@@ -643,6 +679,31 @@ def main() -> int:
         except ImportError:
             (out / f"onscreen-preview-{tag}.ppm").write_bytes(ppm.read_bytes())
     check("previews rendered", True)
+
+    # 10. retina console font + console-tail regression (fb_set_active(false))
+    def band(path, frac=5):  # bottom fifth: the probe block area
+        data = pathlib.Path(path).read_bytes()
+        magic, dims, maxv = data.split(b"\n", 2)[:3]
+        w, h = map(int, dims.split())
+        px = data[data.index(b"255\n") + 4:]
+        rows = h - h // frac
+        return px[rows * w * 3:]
+
+    ret = work / "retina-1080.ppm"
+    run(exe, "retina", 1920, 1080, ret)
+    check("retina render works", ret.stat().st_size > 1920 * 1080 * 3 // 4)
+    try:
+        from PIL import Image
+        Image.open(ret).save(out / "onscreen-preview-retina-1080p.png")
+    except ImportError:
+        pass
+    base = work / "demo-1080p.ppm"
+    c30 = work / "console-30.ppm"
+    c100 = work / "console-100.ppm"
+    run(exe, "console", 1920, 1080, c30, 30)
+    run(exe, "console", 1920, 1080, c100, 100)
+    check("console tail does not tear probe band",
+          band(c30) == band(c100) == band(base))
 
     print("ALL PASS" if ok else "FAILURES")
     return 0 if ok else 1
