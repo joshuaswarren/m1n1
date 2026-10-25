@@ -736,6 +736,7 @@ def main() -> int:
 
     # 7c. build wiring: probe is diagnostic stage-2-only, autoreturn is opt-in
     def preprocessed(extra_flags):
+        (work / "build" / "build_tag.h").write_text(SHIMS["build_tag.h"])
         mainsrc = (work / "src-h" / "main.c")
         if not mainsrc.exists():
             text = (ROOT / "src/main.c").read_text().replace(
