@@ -28,6 +28,7 @@
 #include "string.h"
 #include "types.h"
 #include "utils.h"
+#include "wdt.h"
 
 #ifdef PROBE_HOST
 #include "probe_host_shim.h"
@@ -143,12 +144,15 @@ static u32 probe_font_w(void)
     return w ? w : 8;
 }
 
+/* Where the countdown line lives: right under DONE, set by probe_render. */
+static u32 probe_cd_y, probe_cd_lh = 16;
+
 /* The whole shareable screen: big facts on top, small backup block below. */
 static void probe_render(const probe_t6032_data *d, const char *title, const char *b32)
 {
     char line[560];
     char hex[65];
-    u32 scale, small, y, lh, lh_s, b32_len, per_line, b32_lines, rows_small, s;
+    u32 scale, small, y, lh, lh_s, b32_len, per_line, b32_lines, rows_small, total, s;
     int i;
 
     b32_len = strlen(b32);
@@ -171,15 +175,16 @@ static void probe_render(const probe_t6032_data *d, const char *title, const cha
             per_line = 1;
         b32_lines = (b32_len + per_line - 1) / per_line;
         rows_small = 2 + d->tag_count + b32_lines;
-        if (s <= 2 || 8 * probe_font_h() * s + rows_small * probe_font_h() * small
-                          <= fb.height * 9 / 10)
+        /* 8 big fact rows + DONE + the small rows + the countdown line */
+        total = 9 * probe_font_h() * s + rows_small * probe_font_h() * small;
+        if (s <= 2 || total <= fb.height * 9 / 10)
             break;
     }
     scale = s;
     lh = probe_font_h() * scale;
     lh_s = probe_font_h() * small;
 
-    y = fb.height - (8 * lh + rows_small * lh_s) - fb.height / 20;
+    y = fb.height - total - fb.height / 20;
     if ((int)y < 0)
         y = 0;
     fb_fill(0, y ? y - 8 : 0, fb.width, fb.height - (y ? y - 8 : 0), (rgb_t){0, 0, 0});
@@ -242,6 +247,8 @@ static void probe_render(const probe_t6032_data *d, const char *title, const cha
         y += lh_s;
     }
     fb_draw_scaled_text(24, y, scale, probe_green, "DONE");
+    probe_cd_y = y + lh; /* under DONE, never overlapping it */
+    probe_cd_lh = lh_s;
     fb_update();
 }
 
@@ -268,6 +275,78 @@ static void probe_progress(const char *msg)
     fb_draw_scaled_text(24, fb.height - 56, 2, probe_white, msg);
     fb_update();
 }
+
+/* ---- auto-return countdown ---- */
+
+void probe_fmt_countdown(char *dst, u32 cap, int remain)
+{
+    snprintf(dst, cap, "RETURNING TO macOS IN %d:%02d - or hold the power button", remain / 60,
+             remain % 60);
+}
+
+void probe_countdown_line(int remain)
+{
+    char line[128];
+
+    if (!fb.ptr || !probe_cd_y)
+        return;
+    probe_fmt_countdown(line, sizeof(line), remain);
+    fb_fill(0, probe_cd_y - 4, fb.width, probe_cd_lh + 8, (rgb_t){0, 0, 0});
+    fb_draw_scaled_text(24, probe_cd_y, 1, probe_white, line);
+    fb_update();
+}
+
+/* Reboot funnel: the WDT is armed from the base wdt_disable() cached at
+ * boot, so the reset works with no proxy and no SMC call. Only returns on
+ * failure, so the caller can fall back to the proxy. */
+int __attribute__((weak)) probe_do_reboot(void)
+{
+    wdt_reboot();
+    mdelay(500); /* returns only if the WDT did not arm */
+    reboot();    /* last resort: EL3/hvc + WDT path (UNKNOWN on T6032) */
+    mdelay(500);
+    return 1;
+}
+
+#ifdef PROBE_AUTORETURN
+u32 probe_autoreturn_secs = 300;
+u32 probe_autoreturn_step_us = 1000000;
+
+static void probe_reboot_failed_line(void)
+{
+    if (!fb.ptr || !probe_cd_y)
+        return;
+    fb_fill(0, probe_cd_y - 4, fb.width, probe_cd_lh + 8, (rgb_t){0, 0, 0});
+    fb_draw_scaled_text(24, probe_cd_y, 1, probe_red,
+                        "REBOOT FAILED - HOLD THE POWER BUTTON");
+    fb_update();
+}
+
+static void probe_autoreturn_run(void)
+{
+    printf("probe: returning to macOS in %u:%02u (hold the power button to stay)\n",
+           probe_autoreturn_secs / 60, probe_autoreturn_secs % 60);
+    for (int remain = probe_autoreturn_secs; remain >= 0; remain--) {
+        probe_countdown_line(remain);
+        if (!remain)
+            break;
+        u64 deadline = timeout_calculate(probe_autoreturn_step_us);
+        while (!timeout_expired(deadline))
+            mdelay(1);
+    }
+    /* Without the WDT node the loader's wdt base was never cached:
+     * wdt_reboot() would no-op and reboot() would end in its spin loop with
+     * no reset, so fall back to the proxy instead of hanging. */
+    if (probe_adt_path("/arm-io/wdt") < 0) {
+        printf("reboot failed, hold the power button\n");
+        probe_reboot_failed_line();
+        return;
+    }
+    probe_do_reboot(); /* arms the WDT; reset is imminent, this never returns */
+    printf("reboot failed, hold the power button\n");
+    probe_reboot_failed_line();
+}
+#endif
 
 /* ---- probe proper ---- */
 
@@ -456,6 +535,9 @@ void probe_t6032_run(void)
     probe_render(&d, PROBE_TITLE, b32);
     printf("probe: done\n");
     fb_set_active(false); /* later console lines would tear the screen */
+#ifdef PROBE_AUTORETURN
+    probe_autoreturn_run();
+#endif
 }
 
 void probe_fb_demo_run(void)
@@ -494,4 +576,7 @@ void probe_fb_demo_run(void)
     printf("probe: DEMO screen (no hardware touched)\n");
     probe_render(&d, "T6032 PROBE DEMO", b32);
     fb_set_active(false);
+#ifdef PROBE_AUTORETURN
+    probe_autoreturn_run();
+#endif
 }

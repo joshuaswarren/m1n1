@@ -221,6 +221,10 @@ def main():
     check("smc and aop present (ascwrap-v6, as other M3-family ADTs)",
           have(adt, "/arm-io/smc") is not None and have(adt, "/arm-io/aop") is not None,
           "both present")
+    wdt = have(adt, "/arm-io/wdt")
+    check("wdt present (wdt_disable caches the base; wdt_reboot re-arms it)",
+          wdt is not None,
+          "absent: wdt_reboot() would no-op and reboot() falls back to its EL3/WDT path")
     check("chosen/memory-map present (SEPFW etc. are iBoot-filled at runtime, not in this file)",
           have(adt, "/chosen/memory-map") is not None,
           "static ADT: runtime entries added by iBoot")

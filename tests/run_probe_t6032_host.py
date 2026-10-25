@@ -216,6 +216,12 @@ int adt_get_reg(const void *a, int *path, const char *prop, int idx, uint64_t *a
 int pmgr_adt_power_enable(const char *path) { return -1; }
 int mmu_add_mapping(uint64_t f, uint64_t t, size_t size, int idx, int perm) { return 0; }
 void iodev_console_kick(void) {}
+void wdt_reboot(void) {}
+void reboot(void) {}
+void udelay(uint32_t d) { (void)d; }
+void mdelay(uint32_t m) { udelay(m * 1000); }
+uint64_t timeout_calculate(uint32_t usec) { return usec; }
+bool timeout_expired(uint64_t t) { (void)t; return true; } /* every wait expires at once on host */
 void iodev_console_rewind(int id) { (void)id; }
 int payload_logo(void *a, void *b) { return 0; }
 void *memset64(void *dst, uint64_t value, size_t size) {
@@ -274,6 +280,14 @@ int debug_printf(const char *fmt, ...) {
     return n;
 }
 
+/* counted reboot funnel (strong: overrides the weak device body) */
+long reboot_calls;
+int reboot_should_fail = 1;
+int probe_do_reboot(void) {
+    reboot_calls++;
+    return reboot_should_fail;
+}
+
 /* strong mock accessors: the counted funnels */
 static uint64_t seg_phys[3], seg_size[3];
 
@@ -304,7 +318,13 @@ const void *probe_adt_prop(int node, const char *name, uint32_t *len) {
     }
     return NULL;
 }
-int probe_adt_path(const char *path) { return !strcmp(path, "/arm-io/gfx-asc") ? 10 : -1; }
+int probe_adt_path(const char *path) {
+    if (!strcmp(path, "/arm-io/gfx-asc"))
+        return 10;
+    if (!strcmp(path, "/arm-io/wdt"))
+        return 12;
+    return -1;
+}
 const void *adt_gfx_prop(const char *name, uint32_t *len) { (void)name; (void)len; return NULL; }
 int probe_sgx_base(uint64_t *base) { *base = sgx_base_fake; return 0; }
 uint32_t probe_mmio_read32(uint64_t addr) {
@@ -418,8 +438,25 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(argv[1], "demo")) {
         fb_setup(strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0));
+        probe_autoreturn_secs = 0; /* no countdown loop, no reboot in previews */
+        probe_autoreturn_step_us = 1000;
         probe_fb_demo_run();
+        probe_countdown_line(300);
         write_ppm(argv[4]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "fmt")) {
+        char line[128];
+        probe_fmt_countdown(line, sizeof(line), atoi(argv[2]));
+        printf("%s\n", line);
+        return 0;
+    }
+    if (!strcmp(argv[1], "autoreturn")) {
+        fb_setup(strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0));
+        probe_autoreturn_secs = strtoul(argv[4], NULL, 0);
+        probe_autoreturn_step_us = 1000;
+        probe_fb_demo_run();
+        printf("REBOOTS %ld\n", reboot_calls);
         return 0;
     }
     if (!strcmp(argv[1], "refused")) {
@@ -442,7 +479,10 @@ int main(int argc, char **argv) {
         cur_boot_args.video.depth = 32 | 0x10000;
         cur_boot_args.video.base = (uint64_t)(uintptr_t)calloc(h, w * 4);
         fb_init(false);
+        probe_autoreturn_secs = 0;
+        probe_autoreturn_step_us = 1000;
         probe_fb_demo_run();
+        probe_countdown_line(300);
         write_ppm(argv[4]);
         return 0;
     }
@@ -452,6 +492,8 @@ int main(int argc, char **argv) {
          * the probe block, so the band is identical for any line count. */
         fb_setup(strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0));
         fb_set_active(true);
+        probe_autoreturn_secs = 0;
+        probe_autoreturn_step_us = 1000;
         char l[128];
         int n = atoi(argv[5]);
         for (int i = 0; i < n; i++) {
@@ -459,6 +501,7 @@ int main(int argc, char **argv) {
             fb_console_write(l, k);
         }
         probe_fb_demo_run();
+        probe_countdown_line(300);
         const char *t = "probe: done\nRunning proxy...\nline3\n";
         fb_console_write(t, strlen(t));
         write_ppm(argv[4]);
@@ -533,7 +576,7 @@ def build_harness(work: pathlib.Path) -> pathlib.Path:
 
     exe = work / "harness"
     cc = subprocess.run(
-        ["cc", "-O2", "-g", "-DPROBE_HOST=1", "-D_GNU_SOURCE",
+        ["cc", "-O2", "-g", "-DPROBE_HOST=1", "-DPROBE_AUTORETURN=1", "-D_GNU_SOURCE",
          "-include", str(work / "preinc.h"),
          f"-I{shim}", f"-I{ROOT / 'src'}", "-o", str(exe)] + srcs,
         capture_output=True, text=True)
@@ -657,6 +700,15 @@ def main() -> int:
     check("no raw firmware bytes shareable", not leaks)
     check("no first16/last16 in report", fw[:16].hex() not in shareable
           and fw[-16:].hex() not in shareable)
+
+    # 7b. countdown formatting + autoreturn mock
+    for remain, want in ((300, "5:00"), (299, "4:59"), (65, "1:05"), (5, "0:05"), (0, "0:00")):
+        got = run(exe, "fmt", remain).stdout.strip()
+        check(f"countdown fmt {remain}",
+              got == f"RETURNING TO macOS IN {want} - or hold the power button")
+    a = run(exe, "autoreturn", 1920, 1080, 2)
+    check("autoreturn reboots once", "REBOOTS 1" in a.stdout)
+    check("autoreturn fallback message", "reboot failed, hold the power button" in a.stdout)
 
     # 8. decoder negative cases
     try:

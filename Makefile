@@ -116,6 +116,15 @@ ifeq ($(PROBE_FB_DEMO),1)
 CFG += PROBE_FB_DEMO
 endif
 
+# Probe auto-return: after the screen, count down five minutes and reboot to
+# macOS (defaults ON; PROBE_AUTORETURN=0 keeps the proxy-forever behaviour).
+ifeq ($(PROBE_AUTORETURN),)
+PROBE_AUTORETURN = 1
+endif
+ifeq ($(PROBE_AUTORETURN),1)
+CFG += PROBE_AUTORETURN
+endif
+
 
 LDFLAGS := -EL -maarch64elf --no-undefined -X -Bsymbolic \
 	-z notext --no-apply-dynamic-relocs --orphan-handling=warn \
