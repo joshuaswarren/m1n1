@@ -11,6 +11,11 @@
 
 static u64 wdt_base = 0;
 
+bool wdt_available(void)
+{
+    return wdt_base != 0;
+}
+
 void wdt_disable(void)
 {
     int path[8];

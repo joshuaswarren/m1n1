@@ -175,8 +175,10 @@ static void probe_render(const probe_t6032_data *d, const char *title, const cha
             per_line = 1;
         b32_lines = (b32_len + per_line - 1) / per_line;
         rows_small = 2 + d->tag_count + b32_lines;
-        /* 8 big fact rows + DONE + the small rows + the countdown line */
-        total = 9 * probe_font_h() * s + rows_small * probe_font_h() * small;
+        /* 8 big fact rows + DONE + the small rows + the gap and countdown
+         * line under it */
+        total = 9 * probe_font_h() * s + rows_small * probe_font_h() * small
+                + probe_font_h() * small + 8;
         if (s <= 2 || total <= fb.height * 9 / 10)
             break;
     }
@@ -247,7 +249,7 @@ static void probe_render(const probe_t6032_data *d, const char *title, const cha
         y += lh_s;
     }
     fb_draw_scaled_text(24, y, scale, probe_green, "DONE");
-    probe_cd_y = y + lh; /* under DONE, never overlapping it */
+    probe_cd_y = y + lh + 8; /* one blank gap row under DONE, never overlapping it */
     probe_cd_lh = lh_s;
     fb_update();
 }
@@ -280,8 +282,12 @@ static void probe_progress(const char *msg)
 
 void probe_fmt_countdown(char *dst, u32 cap, int remain)
 {
-    snprintf(dst, cap, "RETURNING TO macOS IN %d:%02d - or hold the power button", remain / 60,
-             remain % 60);
+    snprintf(dst, cap, "REBOOTING IN %d:%02d - hold power to turn off", remain / 60, remain % 60);
+}
+
+u32 probe_countdown_row(void)
+{
+    return probe_cd_y;
 }
 
 void probe_countdown_line(int remain)
@@ -291,7 +297,7 @@ void probe_countdown_line(int remain)
     if (!fb.ptr || !probe_cd_y)
         return;
     probe_fmt_countdown(line, sizeof(line), remain);
-    fb_fill(0, probe_cd_y - 4, fb.width, probe_cd_lh + 8, (rgb_t){0, 0, 0});
+    fb_fill(0, probe_cd_y, fb.width, probe_cd_lh, (rgb_t){0, 0, 0});
     fb_draw_scaled_text(24, probe_cd_y, 1, probe_white, line);
     fb_update();
 }
@@ -316,7 +322,7 @@ static void probe_reboot_failed_line(void)
 {
     if (!fb.ptr || !probe_cd_y)
         return;
-    fb_fill(0, probe_cd_y - 4, fb.width, probe_cd_lh + 8, (rgb_t){0, 0, 0});
+    fb_fill(0, probe_cd_y, fb.width, probe_cd_lh, (rgb_t){0, 0, 0});
     fb_draw_scaled_text(24, probe_cd_y, 1, probe_red,
                         "REBOOT FAILED - HOLD THE POWER BUTTON");
     fb_update();
@@ -324,7 +330,7 @@ static void probe_reboot_failed_line(void)
 
 static void probe_autoreturn_run(void)
 {
-    printf("probe: returning to macOS in %u:%02u (hold the power button to stay)\n",
+    printf("probe: rebooting in %u:%02u (hold power to turn off)\n",
            probe_autoreturn_secs / 60, probe_autoreturn_secs % 60);
     for (int remain = probe_autoreturn_secs; remain >= 0; remain--) {
         probe_countdown_line(remain);
@@ -334,10 +340,10 @@ static void probe_autoreturn_run(void)
         while (!timeout_expired(deadline))
             mdelay(1);
     }
-    /* Without the WDT node the loader's wdt base was never cached:
-     * wdt_reboot() would no-op and reboot() would end in its spin loop with
-     * no reset, so fall back to the proxy instead of hanging. */
-    if (probe_adt_path("/arm-io/wdt") < 0) {
+    /* Only trust the reset path when the boot-time wdt_disable() actually
+     * cached a watchdog base; otherwise wdt_reboot() no-ops and reboot()
+     * ends in its spin loop with no reset - fall back to the proxy. */
+    if (!wdt_available()) {
         printf("reboot failed, hold the power button\n");
         probe_reboot_failed_line();
         return;

@@ -16,9 +16,13 @@ void probe_t6032_run(void);
 void probe_fb_demo_run(void);
 
 /* Countdown line formatting (pure; host-tested) and the single-line redraw.
- * "RETURNING TO macOS IN m:ss - or hold the power button". */
+ * "REBOOTING IN m:ss - hold power to turn off": the reset does not select a
+ * boot volume, returning to macOS needs the tester restored separately. */
 void probe_fmt_countdown(char *dst, u32 cap, int remain);
 void probe_countdown_line(int remain);
+
+/* The framebuffer row the countdown line occupies (set by the last render). */
+u32 probe_countdown_row(void);
 
 /* Test hooks: the countdown length in seconds and the per-update wait. */
 extern u32 probe_autoreturn_secs;

@@ -329,9 +329,13 @@ void m1n1_main(void)
 
     printf("Initialization complete.\n");
 
-    /* On the Studio: read, draw on the firmware framebuffer, then proxy. */
+#ifdef PROBE_T6032
+    /* Diagnostic builds only: on the Studio, read, draw on the firmware
+     * framebuffer, then return to macOS. Ordinary boots and stage 1 never
+     * run the probe. */
     if (chip_id == T6032)
         probe_t6032_run();
+#endif
 
     run_actions();
 

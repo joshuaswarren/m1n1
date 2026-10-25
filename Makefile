@@ -116,12 +116,21 @@ ifeq ($(PROBE_FB_DEMO),1)
 CFG += PROBE_FB_DEMO
 endif
 
-# Probe auto-return: after the screen, count down five minutes and reboot to
-# macOS (defaults ON; PROBE_AUTORETURN=0 keeps the proxy-forever behaviour).
-ifeq ($(PROBE_AUTORETURN),)
-PROBE_AUTORETURN = 1
+# Diagnostic on-screen probe for the Mac Studio (T6032). Diagnostic-only and
+# stage-2-only: a stage 1 must chainload, never probe, count down or reset.
+ifeq ($(PROBE_T6032),1)
+ifneq ($(ESP_STAGE2),1)
+$(error PROBE_T6032 requires ESP_STAGE2=1: the probe must never run in stage 1)
 endif
+CFG += PROBE_T6032
+endif
+
+# Auto-return countdown after a diagnostic screen. Default OFF; only
+# meaningful together with a diagnostic screen build.
 ifeq ($(PROBE_AUTORETURN),1)
+ifeq ($(PROBE_T6032)$(PROBE_FB_DEMO),)
+$(error PROBE_AUTORETURN=1 requires PROBE_T6032=1 or PROBE_FB_DEMO=1)
+endif
 CFG += PROBE_AUTORETURN
 endif
 

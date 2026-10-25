@@ -217,6 +217,8 @@ int pmgr_adt_power_enable(const char *path) { return -1; }
 int mmu_add_mapping(uint64_t f, uint64_t t, size_t size, int idx, int perm) { return 0; }
 void iodev_console_kick(void) {}
 void wdt_reboot(void) {}
+bool wdt_ready = true;
+bool wdt_available(void) { return wdt_ready; }
 void reboot(void) {}
 void udelay(uint32_t d) { (void)d; }
 void mdelay(uint32_t m) { udelay(m * 1000); }
@@ -455,8 +457,25 @@ int main(int argc, char **argv) {
         fb_setup(strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0));
         probe_autoreturn_secs = strtoul(argv[4], NULL, 0);
         probe_autoreturn_step_us = 1000;
+        wdt_ready = strcmp(argv[5], "noready") != 0;
         probe_fb_demo_run();
         printf("REBOOTS %ld\n", reboot_calls);
+        return 0;
+    }
+    if (!strcmp(argv[1], "countline")) {
+        /* after a countdown update the DONE row must be pixel-identical */
+        fb_setup(strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0));
+        probe_autoreturn_secs = 0;
+        probe_autoreturn_step_us = 1000;
+        probe_fb_demo_run();
+        uint32_t cd = probe_countdown_row();
+        size_t rows = 128, stride = (size_t)fb.stride * 4;
+        unsigned char *before = malloc(rows * stride);
+        memcpy(before, (unsigned char *)fb.ptr + (cd - rows) * stride, rows * stride);
+        probe_countdown_line(atoi(argv[4]));
+        int same = !memcmp(before, (unsigned char *)fb.ptr + (cd - rows) * stride, rows * stride);
+        printf("DONEBAND %s\n", same ? "SAME" : "DIFF");
+        write_ppm(argv[5]);
         return 0;
     }
     if (!strcmp(argv[1], "refused")) {
@@ -705,10 +724,43 @@ def main() -> int:
     for remain, want in ((300, "5:00"), (299, "4:59"), (65, "1:05"), (5, "0:05"), (0, "0:00")):
         got = run(exe, "fmt", remain).stdout.strip()
         check(f"countdown fmt {remain}",
-              got == f"RETURNING TO macOS IN {want} - or hold the power button")
-    a = run(exe, "autoreturn", 1920, 1080, 2)
+              got == f"REBOOTING IN {want} - hold power to turn off")
+    a = run(exe, "autoreturn", 1920, 1080, 2, "ready")
     check("autoreturn reboots once", "REBOOTS 1" in a.stdout)
     check("autoreturn fallback message", "reboot failed, hold the power button" in a.stdout)
+    a = run(exe, "autoreturn", 1920, 1080, 2, "noready")
+    check("unready wdt never reboots", "REBOOTS 0" in a.stdout
+          and "reboot failed, hold the power button" in a.stdout)
+    c = run(exe, "countline", 1920, 1080, 299, work / "countline.ppm")
+    check("countdown keeps DONE pixels", "DONEBAND SAME" in c.stdout)
+
+    # 7c. build wiring: probe is diagnostic stage-2-only, autoreturn is opt-in
+    def preprocessed(extra_flags):
+        mainsrc = (work / "src-h" / "main.c")
+        if not mainsrc.exists():
+            text = (ROOT / "src/main.c").read_text().replace(
+                '#include "utils.h"', '#include "utils_host.h"')
+            mainsrc.write_text(text)
+        r = subprocess.run(["cc", "-E", "-DPROBE_HOST=1", "-D_GNU_SOURCE",
+                            "-DPROBE_AUTORETURN=1", *extra_flags,
+                            f"-I{work / 'shims'}", f"-I{work / 'build'}",
+                            f"-I{ROOT / 'src'}", "-o", "-", str(mainsrc)],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[-1500:]
+        return r.stdout
+
+    plain = preprocessed([])
+    diag = preprocessed(["-DPROBE_T6032=1"])
+    check("ordinary build never calls the probe", "probe_t6032_run();" not in plain)
+    check("diagnostic stage2 probes once", diag.count("probe_t6032_run();") == 1)
+    mk = subprocess.run(["make", "-n", "RELEASE=1", "CHAINLOADING=1", "PROBE_T6032=1"],
+                        cwd=ROOT, capture_output=True, text=True)
+    check("probe flag demands stage2", mk.returncode != 0
+          and "requires ESP_STAGE2" in mk.stderr)
+    mk = subprocess.run(["make", "-n", "PROBE_AUTORETURN=1"], cwd=ROOT,
+                        capture_output=True, text=True)
+    check("autoreturn alone is an error", mk.returncode != 0
+          and "requires PROBE_T6032" in mk.stderr)
 
     # 8. decoder negative cases
     try:
