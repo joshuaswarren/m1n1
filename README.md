@@ -157,3 +157,7 @@ m1n1 embeds other Rust crates. Licenses can be found in their vendor directories
 J700 Stage 1 configuration, ESP Stage 2 setup and installation are documented in
 [docs/j700-install.md](docs/j700-install.md). Release packages include this guide
 as `ESP-AND-INSTALL.md`.
+
+## Contributors
+
+Everyone credited so far: [CONTRIBUTORS.md](CONTRIBUTORS.md).
