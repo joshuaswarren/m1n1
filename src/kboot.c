@@ -3204,10 +3204,21 @@ static bool skip_pmp_prop(const char *prop_name)
 static int dt_set_pmp(void)
 {
     int pmp_node = fdt_path_offset(dt, "pmp");
+    if (pmp_node < 0 && chip_id == T6001) {
+        pmp_node = fdt_node_offset_by_compatible(dt, -1, "apple,t6000-pmp-v2");
+        if (pmp_node >= 0 &&
+            fdt_node_offset_by_compatible(dt, pmp_node, "apple,t6000-pmp-v2") >= 0) {
+            printf("FDT: multiple PMP nodes without an alias\n");
+            return 0;
+        }
+    }
     if (pmp_node < 0) {
         printf("FDT: pmp not found in devtree\n");
         return 0;
     }
+    char pmp_path[256];
+    if (fdt_get_path(dt, pmp_node, pmp_path, sizeof(pmp_path)))
+        bail("FDT: failed to resolve pmp path\n");
     int chosen_anode = adt_path_offset(adt, "/chosen");
     if (chosen_anode < 0)
         bail("ADT: /chosen not found \n");
@@ -3239,8 +3250,9 @@ static int dt_set_pmp(void)
         if (fdt_setprop(dt, pmp_node, prop_name, prop->value, prop->size))
             bail("FDT: failed to transfer pmp tunable");
     }
-    pmp_node = fdt_path_offset(dt, "pmp");
-    fdt_setprop_string(dt, pmp_node, "status", "okay");
+    pmp_node = fdt_path_offset(dt, pmp_path);
+    if (pmp_node < 0 || fdt_setprop_string(dt, pmp_node, "status", "okay"))
+        bail("FDT: failed to enable pmp\n");
     return 0;
 }
 
