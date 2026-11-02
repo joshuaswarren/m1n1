@@ -66,6 +66,14 @@ To install on an OS container based on macOS >=12.1, use `m1n1.bin`:
 kmutil configure-boot -c m1n1.bin --raw --entry-point 2048 --lowest-virtual-address 0 -v <path to your OS volume>
 ```
 
+### PMP calibration
+
+The `pmp` device-tree alias selects the node that receives this machine's PMP calibration from its ADT.
+On T6001, a tree without that alias can use one uniquely matching `apple,t6000-pmp-v2` node.
+Multiple matching nodes remain unchanged; other chips still require the alias.
+The copy preserves the machine's own board, DRAM and tunable values before enabling the node.
+Run the host regression with `python3 tests/test_pmp_handoff.py`.
+
 ## Payloads
 
 m1n1 supports running payloads by simple concatenation:
