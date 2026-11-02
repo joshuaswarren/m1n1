@@ -75,6 +75,7 @@
 - [@yuyuyureka](https://github.com/yuyuyureka)
 - [@zech4o](https://github.com/zech4o)
 - [@zhuowei](https://github.com/zhuowei)
+
 _Linked GitHub accounts only. Anonymous (unlinked) commit authors are
 enumerable through the API (anon=true) but are identified there only by
 name/email, which this registry does not publish; credit them by hand in
