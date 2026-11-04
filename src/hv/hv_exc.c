@@ -4,6 +4,8 @@
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
+#include "hv_sprr.h"
+#include "iodev.h"
 #include "smp.h"
 #include "string.h"
 #include "uart.h"
@@ -203,7 +205,13 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
 
     regs[31] = 0;
 
+    /* Don't handle any TLB maintenance here if we're running in emulated SPRR mode */
+    if (!is_read && FIELD_GET(ESR_ISS_MSR_OP0, reg) == 1 && FIELD_GET(ESR_ISS_MSR_CRn, reg) == 8 &&
+        hv_sprr_traps_tlbi())
+        return false;
+
     switch (reg) {
+        SYSREG_PASS(SYS_TPIDR2_EL0)
         SYSREG_PASS(SYS_IMP_APL_CORE_NRG_ACC_DAT);
         SYSREG_PASS(SYS_IMP_APL_CORE_SRM_NRG_ACC_DAT);
         /* Architectural timer, for ECV */
@@ -388,7 +396,7 @@ static bool hv_handle_msr(struct exc_info *ctx, u64 iss)
 #endif
     }
 
-    return false;
+    return hv_sprr_handle_msr(ctx, reg, rt, is_read);
 }
 
 static void hv_get_context(struct exc_info *ctx)
@@ -440,6 +448,41 @@ static void hv_exc_exit(struct exc_info *ctx)
     msr(SP_EL1, ctx->sp[1]);
 }
 
+static void hv_dump_serror(struct exc_info *ctx)
+{
+    /*
+     * This doesn't do any sysreg access or similar to prevent any double faults which
+     * may corrupt the output and make debugging these SErrors very hard.
+     */
+    printf("HV: Guest SError\n");
+    printf("CPU: %lu\n", ctx->cpu_id);
+    printf("MPIDR: 0x%lx\n", ctx->mpidr);
+    printf("Registers: (@%p)\n", ctx->regs);
+    printf("  x0-x3: %016lx %016lx %016lx %016lx\n", ctx->regs[0], ctx->regs[1], ctx->regs[2],
+           ctx->regs[3]);
+    printf("  x4-x7: %016lx %016lx %016lx %016lx\n", ctx->regs[4], ctx->regs[5], ctx->regs[6],
+           ctx->regs[7]);
+    printf(" x8-x11: %016lx %016lx %016lx %016lx\n", ctx->regs[8], ctx->regs[9], ctx->regs[10],
+           ctx->regs[11]);
+    printf("x12-x15: %016lx %016lx %016lx %016lx\n", ctx->regs[12], ctx->regs[13], ctx->regs[14],
+           ctx->regs[15]);
+    printf("x16-x19: %016lx %016lx %016lx %016lx\n", ctx->regs[16], ctx->regs[17], ctx->regs[18],
+           ctx->regs[19]);
+    printf("x20-x23: %016lx %016lx %016lx %016lx\n", ctx->regs[20], ctx->regs[21], ctx->regs[22],
+           ctx->regs[23]);
+    printf("x24-x27: %016lx %016lx %016lx %016lx\n", ctx->regs[24], ctx->regs[25], ctx->regs[26],
+           ctx->regs[27]);
+    printf("x28-x30: %016lx %016lx %016lx\n", ctx->regs[28], ctx->regs[29], ctx->regs[30]);
+    printf("PC:       0x%lx\n", ctx->elr);
+    printf("SP_EL0:   0x%lx\n", ctx->sp[0]);
+    printf("SP_EL1:   0x%lx\n", ctx->sp[1]);
+    printf("SPSR:     0x%lx\n", ctx->spsr);
+    printf("FAR:      0x%lx\n", ctx->far);
+    printf("ESR:      0x%lx\n", ctx->esr);
+
+    iodev_console_flush();
+}
+
 void hv_exc_sync(struct exc_info *ctx)
 {
     hv_wdt_breadcrumb('S');
@@ -458,6 +501,13 @@ void hv_exc_sync(struct exc_info *ctx)
                 case ESR_ISS_IMPDEF_MSR:
                     handled = hv_handle_msr_unlocked(ctx, ctx->afsr1);
                     break;
+            }
+            break;
+        case ESR_EC_HVC:
+            hv_wdt_breadcrumb('h');
+            if (hv_hvc_dispatch_unlocked(ctx, FIELD_GET(ESR_ISS, ctx->esr))) {
+                hv_wdt_breadcrumb('s');
+                return;
             }
             break;
     }
@@ -490,17 +540,24 @@ void hv_exc_sync(struct exc_info *ctx)
                     break;
             }
             break;
+        case ESR_EC_HVC:
+            hv_wdt_breadcrumb('H');
+            handled = hv_hvc_dispatch(ctx, FIELD_GET(ESR_ISS, ctx->esr));
+            break;
     }
 
     if (handled) {
         hv_wdt_breadcrumb('+');
-        ctx->elr += 4;
+        // HVC alread leaves ELR past the instruction
+        if (ec != ESR_EC_HVC)
+            ctx->elr += 4;
     } else {
         hv_wdt_breadcrumb('-');
         // VM code can forward a nested SError exception here
-        if (FIELD_GET(ESR_EC, ctx->esr) == ESR_EC_SERROR)
+        if (FIELD_GET(ESR_EC, ctx->esr) == ESR_EC_SERROR) {
+            hv_dump_serror(ctx);
             hv_exc_proxy(ctx, START_EXCEPTION_LOWER, EXC_SERROR, NULL);
-        else
+        } else
             hv_exc_proxy(ctx, START_EXCEPTION_LOWER, EXC_SYNC, NULL);
     }
 
@@ -598,6 +655,7 @@ void hv_exc_serr(struct exc_info *ctx)
     hv_wdt_breadcrumb('E');
     hv_get_context(ctx);
     hv_exc_entry();
+    hv_dump_serror(ctx);
     hv_exc_proxy(ctx, START_EXCEPTION_LOWER, EXC_SERROR, NULL);
     hv_exc_exit(ctx);
     hv_wdt_breadcrumb('e');

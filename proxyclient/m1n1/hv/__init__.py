@@ -15,6 +15,7 @@ from .gdbserver import *
 from .types import *
 from .virtutils import *
 from .virtio import *
+from .sprr import patch_text_sprr_emu
 
 __all__ = ["HV"]
 
@@ -107,6 +108,7 @@ class HV(Reloadable):
         self.wdt_cpu = None
         self.smp = True
         self.hook_exceptions = False
+        self.emulate_sprr = None
         self.started_cpus = {}
         self.started = False
         self.ctx = None
@@ -1360,6 +1362,11 @@ class HV(Reloadable):
         self.iface.tty_log = fd
 
     def init(self):
+        if self.emulate_sprr is None:
+            self.emulate_sprr = not self.u.cpu_features.apple_sysregs_unlocked
+        if self.emulate_sprr:
+            print("SPRR/GXF: emulating in EL2 (guest image will be patched)")
+
         self.adt = load_adt(self.u.get_adt())
         self.iodev = self.p.iodev_whoami()
         self.tba = self.u.ba.copy()
@@ -1615,7 +1622,10 @@ class HV(Reloadable):
     def setup_adt(self):
         self.adt["product"].product_name += " on m1n1 hypervisor"
         self.adt["product"].product_description += " on m1n1 hypervisor"
-        soc_name = "Virtual " + self.adt["product"].product_soc_name + " on m1n1 hypervisor"
+        if self.emulate_sprr:
+            soc_name = "Virtual " + self.adt["product"].product_soc_name + " on cursed m1n1 hypervisor"
+        else:
+            soc_name = "Virtual " + self.adt["product"].product_soc_name + " on m1n1 hypervisor"
         self.adt["product"].product_soc_name = soc_name
 
         # change default serial to uart0 instead of UART-via-dockchannel
@@ -1649,6 +1659,15 @@ class HV(Reloadable):
                     del self.adt[name]
                 except KeyError:
                     pass
+
+            target = f"atc{idx}"
+            for node in self.adt["/arm-io"]:
+                if not node.name.startswith("display-crossbar"):
+                    continue
+                endpoints = node.getprop("dfp-endpoints", [])
+                if target in endpoints:
+                    node.dfp_endpoints = [name for name in endpoints if name != target]
+                    print(f"Removing display endpoint {target} from {node._path}")
 
         if self.wdt_cpu is not None:
             name = f"/cpus/cpu{self.wdt_cpu}"
@@ -1827,39 +1846,8 @@ class HV(Reloadable):
 
         self._load_macho_symbols()
 
-        def load_hook(data, segname, size, fileoff, dest):
-            if segname != "__TEXT_EXEC":
-                return data
-
-            print(f"Patching segment {segname}...")
-
-            a = array.array("I", data)
-
-            output = []
-
-            p = 0
-            while (p := data.find(b"\x20\x00", p)) != -1:
-                if (p & 3) != 2:
-                    p += 1
-                    continue
-
-                opcode = a[p // 4]
-                inst = self.hvc((opcode & 0xffff))
-                off = fileoff + (p & ~3)
-                if off >= 0xbfcfc0:
-                    print(f"  0x{off:x}: 0x{opcode:04x} -> hvc 0x{opcode:x} (0x{inst:x})")
-                    a[p // 4] = inst
-                p += 4
-
-            print("Done.")
-            return a.tobytes()
-
-        def load_hook_m3(data, segname, size, fileoff, dest):
-            if segname != "__TEXT_EXEC":
-                return data
-
+        def patch_m3_regs(data, fileoff):
             inst = 0xd503201f # noop
-            print(f"Patching segment {segname}...")
 
             a = array.array("I", data)
 
@@ -1898,13 +1886,25 @@ class HV(Reloadable):
                         a[p // 4] = inst
                 p += 4
 
-            print("Done.")
             return a.tobytes()
 
-        #image = macho.prepare_image(load_hook)
         chip_id = self.u.adt["/chosen"].chip_id
-        if chip_id in (0x8122, 0x6030, 0x6031, 0x6032, 0x6034):
-            image = macho.prepare_image(load_hook_m3)
+        do_patch_m3_regs = chip_id in (0x8122, 0x6030, 0x6031, 0x6032, 0x6034)
+
+        def load_hook(data, segname, size, fileoff, dest):
+            if segname != "__TEXT_EXEC":
+                return data
+
+            print(f"Patching segment {segname}...")
+            if self.emulate_sprr:
+                data = patch_text_sprr_emu(data, log=print)
+            if do_patch_m3_regs:
+                data = patch_m3_regs(data, fileoff)
+            print("Done.")
+            return data
+
+        if self.emulate_sprr or do_patch_m3_regs:
+            image = macho.prepare_image(load_hook)
         else:
             image = macho.prepare_image()
         self.load_raw(image, entryoffset=(macho.entry - macho.vmin), use_xnu_symbols=self.xnu_mode and symfile is not None, vmin=macho.vmin)
@@ -1987,7 +1987,10 @@ class HV(Reloadable):
         print("Shutting down framebuffer...")
         self.p.fb_shutdown(True)
 
-        if self.u.cpu_features.apple_sysregs_unlocked:
+        if self.emulate_sprr:
+            print("Enabling emulated SPRR/GXF...")
+            self.p.hv_sprr_set_active(True)
+        elif self.u.cpu_features.apple_sysregs_unlocked:
             print("Enabling SPRR...")
             self.u.msr(SPRR_CONFIG_EL1, 1)
 

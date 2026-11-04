@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "smp_asm.h"
 #include "soc.h"
 
 #define UTRSTAT 0x010
@@ -13,6 +14,7 @@
 .extern _v_sp0_serr
 .extern _reset_stack
 .extern _cpu_reset_c
+.extern smp_reset_stacks
 .extern wdt_reboot
 
 .section .init, "ax"
@@ -150,9 +152,65 @@ cpu_reset:
     mov w0, 'O'
     bl debug_putc
 
+    /* T8152 has two six-core banks; Aff2 describes the core class. Pick a
+     * private stack before C so a late reset never uses the next CPU's stack. */
+    adrp x1, chip_id
+    ldr w1, [x1, :lo12:chip_id]
+    mov w2, #T8152
+    cmp w1, w2
+    b.ne 4f
+    mrs x2, MPIDR_EL1
+    and x3, x2, #0xff
+    ubfx x4, x2, #8, #8
+    cmp x3, #6
+    b.hs 5f
+    cmp x4, #1
+    b.hi 5f
+    add x5, x4, x4, lsl #1
+    add x3, x3, x5, lsl #1
+    adrp x1, secondary_stacks
+    add x1, x1, :lo12:secondary_stacks
+    add x3, x3, #1
+    mov x5, #SECONDARY_STACK_SIZE
+    madd x1, x3, x5, x1
+    b 3f
+5:
+    wfe
+    b 5b
+4:
+
+    // for EL3 just keep the shared reset stack for now
+    mrs x8, CurrentEL
+    cmp x8, #0xc
+    beq 2f
+
+    // check if there's already an entry in the stack table for our MPIDR
+    mrs x3, mpidr_el1
+    and x3, x3, #0xffffff
+    adrp x4, smp_reset_stacks
+    add x4, x4, :lo12:smp_reset_stacks
+    ldr x5, =MAX_CPUS
+1:
+    cbz x5, 2f // end if table, MPIDR not found -> use shared reset stack
+    sub x5, x5, #1
+
+    // x6 = MPIDR, x7 = stack
+    ldp x6, x7, [x4], #16
+
+    // check if the current entry's MPIDR matches ours
+    cmp x6, x3
+    bne 1b
+
+    // entry is valid
+    cbz x7, 2f // entry has no stack -> use shared reset stack
+    mov x1, x7 // entry has a valid stack -> use it
+    b 3f
+
+2:
     adrp x1, _reset_stack
     add x1, x1, :lo12:_reset_stack
     ldr x1, [x1]
+3:
     mov sp, x1
 
     ldr x2, [sp, #-8]

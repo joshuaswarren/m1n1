@@ -63,6 +63,7 @@ bool hv_pt_is_ram(u64 ipa);
 int hv_pt_set_writable(u64 ipa, bool writable);
 u64 hv_translate(u64 addr, bool s1only, bool w, u64 *par_out);
 u64 hv_pt_walk(u64 addr);
+bool hv_emulate_pt_store(struct exc_info *ctx, u64 far, u64 ipa, u64 *bytes);
 bool hv_handle_dabort(struct exc_info *ctx);
 bool hv_pa_write(struct exc_info *ctx, u64 addr, u64 *val, int width);
 bool hv_pa_read(struct exc_info *ctx, u64 addr, u64 *val, int width);
@@ -88,8 +89,8 @@ void hv_wdt_pet(void);
 void hv_wdt_suspend(void);
 void hv_wdt_resume(void);
 void hv_wdt_init(void);
-void hv_wdt_start(int cpu);
-void hv_wdt_stop(void);
+int hv_wdt_start(int cpu);
+int hv_wdt_stop(void);
 void hv_wdt_breadcrumb(char c);
 void hv_do_panic(void);
 
@@ -111,9 +112,9 @@ u64 hv_get_afsr1(void);
 void hv_set_elr(u64 val);
 
 /* HV main */
-void hv_init(void);
-void hv_start(void *entry, u64 regs[4]);
-void hv_start_secondary(int cpu, void *entry, u64 regs[4]);
+int hv_init(void);
+int hv_start(void *entry, u64 regs[4]);
+int hv_start_secondary(int cpu, void *entry, u64 regs[4]);
 void hv_exit_cpu(int cpu);
 void hv_rendezvous(void);
 bool hv_switch_cpu(int cpu);

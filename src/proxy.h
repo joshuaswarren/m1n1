@@ -105,6 +105,7 @@ typedef enum {
     P_KBOOT_SET_INITRD,
     P_KBOOT_PREPARE_DT,
     P_KBOOT_SET_UBOOT,
+    P_KBOOT_BOOT_STORAGE,
 
     P_PMGR_POWER_ENABLE = 0x800, // power/clock management ops
     P_PMGR_POWER_DISABLE,
@@ -119,6 +120,8 @@ typedef enum {
     P_IODEV_WRITE,
     P_IODEV_WHOAMI,
     P_USB_IODEV_VUART_SETUP,
+    P_CDC_SCHEDULE,
+    P_CDC_STATUS,
 
     P_TUNABLES_APPLY_GLOBAL = 0xa00,
     P_TUNABLES_APPLY_LOCAL,
@@ -146,6 +149,7 @@ typedef enum {
     P_VIRTIO_PUT_BUFFER,
     P_HV_EXIT_CPU,
     P_HV_ADD_TIME,
+    P_HV_SPRR_SET_ACTIVE,
 
     P_FB_INIT = 0xd00,
     P_FB_SHUTDOWN,
@@ -184,6 +188,7 @@ typedef enum {
 
 #define S_OK     0
 #define S_BADCMD -1
+#define S_ERROR  -2
 
 typedef struct {
     u64 opcode;

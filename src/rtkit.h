@@ -20,6 +20,7 @@ struct rtkit_buffer {
     void *bfr;
     u64 dva;
     size_t sz;
+    bool owned;
 };
 
 rtkit_dev_t *rtkit_init(const char *name, asc_dev_t *asc, dart_dev_t *dart,
@@ -30,6 +31,8 @@ void rtkit_free(rtkit_dev_t *rtk);
 
 bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep);
 bool rtkit_boot(rtkit_dev_t *rtk);
+bool rtkit_boot_timed(rtkit_dev_t *rtk, u32 timeout_usec);
+u32 rtkit_get_timeout(rtkit_dev_t *rtk);
 
 bool rtkit_can_recv(rtkit_dev_t *rtk);
 

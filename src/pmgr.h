@@ -14,22 +14,42 @@
 #define PMGR_PS_CLKGATE 0x4
 #define PMGR_PS_PWRGATE 0x0
 
+extern const char *pmgr_name;
+
 int pmgr_init(void);
 
 int pmgr_power_enable(u32 id);
 int pmgr_power_disable(u32 id);
 
+int pmgr_adt_path_offset_trace(const void *adt_ptr, int *path);
+
 int pmgr_adt_power_enable(const char *path);
 int pmgr_adt_power_disable(const char *path);
+int pmgr_adt_power_enable_traced(const char *path);
+struct pmgr_saved_mode {
+    uintptr_t addr;
+    u8 target;
+};
+
+struct pmgr_saved_modes {
+    struct pmgr_saved_mode modes[64];
+    size_t count;
+};
+
+int pmgr_adt_power_enable_traced_saved(const char *path, struct pmgr_saved_modes *saved);
+void pmgr_restore_modes(struct pmgr_saved_modes *saved);
 int pmgr_adt_power_enable_index(const char *path, u32 index);
 int pmgr_adt_power_disable_index(const char *path, u32 index);
 int pmgr_adt_reset(const char *path);
 
 int pmgr_reset(int die, const char *name);
 int pmgr_power_on(int die, const char *name);
+int pmgr_power_is_on(int die, const char *name);
 
 int pmgr_set_mode(uintptr_t addr, u8 target_mode);
 
 u32 pmgr_get_feature(const char *name);
+
+int pmgr_set_voltage_ctl(uint32_t offset);
 
 #endif
